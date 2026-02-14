@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-
 client = anthropic.Anthropic()
 
 def invoke_model(tools, session):
@@ -24,32 +23,29 @@ def invoke_model(tools, session):
 
 tools = [
     {
-        "name": "get_weather",
-        "description": "Get the current weather for a location.",
+        "name": "add",
+        "description": "Add two numbers together. Use this for any addition.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "location": {
-                    "type": "string",
-                    "description": "City and state, e.g. San Francisco, CA",
-                }
+                "a": {"type": "number", "description": "First number"},
+                "b": {"type": "number", "description": "Second number"},
             },
-            "required": ["location"],
+            "required": ["a", "b"],
         },
     }
 ]
 
-# Your tool implementation
-def get_weather(location: str) -> str:
-    return json.dumps({"location": location, "temperature": "68°F", "condition": "Sunny"})
+def add(a, b):
+    return json.dumps({"result": a + b})
 
-# Initial request
 session = {
     "messages": [
-        {"role": "user", "content": "What's the weather in SF?"}
+        {"role": "user", "content": "What is 98765432101234 + 12345678909876?"}
     ]
 }
 
-result = invoke_model(tools, session)
+result = agent_loop(invoke_model, tools, session, tool_handlers={"add": add})
 
-print(json.dumps(result))
+print("\n--- Final answer ---")
+print(response(result)["content"])
