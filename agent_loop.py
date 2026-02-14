@@ -202,7 +202,10 @@ def agent_loop(invoke_model, tools, session, tool_handlers=None, name=None, max_
     while max_iterations is None or iteration < max_iterations:
         iteration += 1
 
+        system_prompts = [m["content"] for m in session["messages"] if m.get("role") == "system"]
         api_session = {"messages": to_api_messages(session["messages"])}
+        if system_prompts:
+            api_session["system"] = system_prompts[0]
         api_response = invoke_model(tools, api_session)
 
         messages = parse_response(api_response)

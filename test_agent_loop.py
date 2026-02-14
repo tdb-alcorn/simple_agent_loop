@@ -47,5 +47,5 @@ session = {
 
 result = agent_loop(invoke_model, tools, session, tool_handlers={"add": add})
 
-print("\n--- Final answer ---")
+print("\n" + "-"*80)
 print(response(result)["content"])
