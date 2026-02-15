@@ -1,7 +1,7 @@
 import anthropic
 import json
 from dotenv import load_dotenv
-from agent_loop import init_session, agent_loop, response
+from simple_agent_loop import init_session, agent_loop, response
 
 load_dotenv()
 

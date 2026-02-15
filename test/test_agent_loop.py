@@ -1,5 +1,5 @@
 import anthropic
-from agent_loop import *
+from simple_agent_loop import *
 import json
 from dotenv import load_dotenv
 

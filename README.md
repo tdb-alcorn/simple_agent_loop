@@ -1,4 +1,4 @@
-# agent_loop
+# simple_agent_loop
 
 A minimal agent loop for tool-using language models. ~250 lines. Handles
 message format conversion, parallel tool execution, session compaction,
@@ -7,7 +7,7 @@ and subagent composition.
 ## Install
 
 ```
-pip install agent-loop
+pip install simple-agent-loop
 ```
 
 ## Setup
@@ -15,7 +15,7 @@ pip install agent-loop
 ```python
 import anthropic
 import json
-from agent_loop import init_session, agent_loop, response
+import simple_agent_loop as sal
 
 client = anthropic.Anthropic()  # uses ANTHROPIC_API_KEY env var
 
