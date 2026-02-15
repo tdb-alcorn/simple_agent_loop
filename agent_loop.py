@@ -195,6 +195,32 @@ def log(message, name=None):
     print(line)
 
 
+def compact_session(session):
+    """Compact old thinking and tool_call messages to save context window space.
+
+    Only compacts messages where the model has responded (assistant role)
+    at least twice since that message. Keeps the first 120 chars of content.
+    """
+    messages = session["messages"]
+    assistant_count = 0
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if msg.get("role") == "assistant":
+            assistant_count += 1
+        if assistant_count >= 2 and not msg.get("compacted"):
+            msg_type = msg.get("type")
+            if msg_type == "thinking":
+                content = msg["content"]
+                if len(content) > 120:
+                    msg["content"] = content[:120] + "..."
+                    msg["compacted"] = True
+            elif msg_type == "tool_call":
+                input_str = json.dumps(msg["input"])
+                if len(input_str) > 120:
+                    msg["input"] = {"_compacted": input_str[:120] + "..."}
+                    msg["compacted"] = True
+
+
 def agent_loop(invoke_model, tools, session, tool_handlers=None, name=None, max_iterations=None):
     if tool_handlers is None:
         tool_handlers = {}
@@ -213,6 +239,8 @@ def agent_loop(invoke_model, tools, session, tool_handlers=None, name=None, max_
         for msg in messages:
             extend_session(session, msg)
             log(msg, name)
+
+        compact_session(session)
 
         tool_calls = [m for m in messages if m.get("type") == "tool_call"]
         if not tool_calls:
