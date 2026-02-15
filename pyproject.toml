@@ -1,12 +1,12 @@
 [project]
 name = "simple-agent-loop"
-version = "0.1.0"
+version = "0.1.1"
 description = "A minimal agent loop for tool-using language models"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "Tom MacWright" },
+    { name = "Tom Alcorn" },
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
