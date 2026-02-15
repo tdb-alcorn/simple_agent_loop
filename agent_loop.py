@@ -30,9 +30,10 @@ def fork_session(session):
 
 
 def response(session):
-    if len(session["messages"]) == 0:
-        return None
-    return session["messages"][-1]
+    for msg in reversed(session["messages"]):
+        if msg.get("role") == "assistant":
+            return msg
+    return None
 
 
 def to_api_messages(messages):
