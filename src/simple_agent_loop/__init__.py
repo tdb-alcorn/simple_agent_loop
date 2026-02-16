@@ -248,7 +248,7 @@ def invoke_model(tools, session):
         kwargs["system"] = session["system"]
     if tools:
         kwargs["tools"] = tools
-    return client.messages.create(**kwargs).to_dict()
+    return sal.parse_response(client.messages.create(**kwargs).to_dict())
 ```
 
 ## Hello World
@@ -402,7 +402,7 @@ Tool calls within a single model response execute in parallel automatically.
 ### Agent Loop
 
 - `agent_loop(invoke_model, tools, session, tool_handlers=None, name=None, max_iterations=None)`
-  - `invoke_model(tools, session)` - Function that calls the model API
+  - `invoke_model(tools, session)` - Function that calls the model API and returns a list of generic messages
   - `tools` - List of Anthropic tool schemas ([] for no tools)
   - `session` - Session dict from init_session
   - `tool_handlers` - Dict mapping tool names to handler functions
@@ -421,8 +421,9 @@ Messages use a generic format independent of any API:
     {"type": "tool_call", "name": "...", "id": "...", "input": {...}}
     {"type": "tool_result", "id": "...", "output": "..."}
 
-Conversion to/from Anthropic API format is handled by to_api_messages()
-and parse_response().
+`to_api_messages()` converts generic messages to Anthropic API format.
+`parse_response()` converts an Anthropic API response dict back to generic
+messages -- call it inside your `invoke_model` before returning.
 """
 
 
@@ -438,9 +439,7 @@ def agent_loop(invoke_model, tools, session, tool_handlers=None, name=None, max_
         api_session = {"messages": to_api_messages(session["messages"])}
         if system_prompts:
             api_session["system"] = system_prompts[0]
-        api_response = invoke_model(tools, api_session)
-
-        messages = parse_response(api_response)
+        messages = invoke_model(tools, api_session)
         for msg in messages:
             extend_session(session, msg)
             log(msg, name)

@@ -18,7 +18,7 @@ def invoke_model(tools, session):
         },
         tools=tools,
     )
-    return response.to_dict()
+    return parse_response(response.to_dict())
 
 
 tools = [

@@ -63,11 +63,15 @@ function to_api_messages(messages):
 
 The key insight is that what your session stores as separate messages may need to be combined into a single API message with multiple content blocks.
 
-## 3. Parse the Response
+## 3. Parse the Response (inside invoke_model)
 
-The model returns a response with content blocks. Parse each block back into your generic message format:
+The model returns a response with content blocks. Parse each block back into your generic message format. This parsing happens inside `invoke_model` so that the agent loop receives generic messages and never sees API-specific response objects:
 
 ```
+function invoke_model(tools, session):
+    api_response = call_model_api(tools, session)
+    return parse_response(api_response)
+
 function parse_response(api_response):
     messages = []
     for each block in api_response.content:
@@ -104,9 +108,7 @@ The agent loop ties everything together. Each iteration: call the model, add its
 function agent_loop(invoke_model, tools, session, tool_handlers):
     loop:
         api_messages = to_api_messages(session.messages)
-        api_response = invoke_model(tools, api_messages)
-
-        new_messages = parse_response(api_response)
+        new_messages = invoke_model(tools, api_messages)
         append new_messages to session
 
         tool_calls = filter new_messages for type "tool_call"
@@ -186,7 +188,7 @@ The full implementation is around 200 lines in most languages. The essential pie
 |---|---|
 | Session | Ordered list of generic messages |
 | `to_api_messages` | Translate generic messages to API format |
-| `parse_response` | Translate API response back to generic messages |
+| `invoke_model` | Call the model API, return generic messages (calls `parse_response` internally) |
 | `execute_tool_calls` | Run tool handlers, collect results |
 | `agent_loop` | The loop: call model, execute tools, repeat |
 

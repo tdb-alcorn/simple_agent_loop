@@ -1,6 +1,7 @@
 import anthropic
 import json
 from dotenv import load_dotenv
+import simple_agent_loop as sal
 from simple_agent_loop import init_session, agent_loop, response
 
 load_dotenv()
@@ -18,7 +19,7 @@ def invoke_model(tools, session):
         kwargs["system"] = session["system"]
     if tools:
         kwargs["tools"] = tools
-    return client.messages.create(**kwargs).to_dict()
+    return sal.parse_response(client.messages.create(**kwargs).to_dict())
 
 
 # --- Subagent: Editor ---
