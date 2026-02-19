@@ -1,96 +1,9 @@
-import anthropic
 from simple_agent_loop import *
 import json
-from dotenv import load_dotenv
-
-load_dotenv()
-
-client = anthropic.Anthropic()
-
-def invoke_model(tools, session):
-    # Convert generic messages to Anthropic API format
-    system_prompt = None
-    api_messages = []
-    assistant_blocks = []
-    tool_result_blocks = []
-
-    def flush_assistant():
-        nonlocal assistant_blocks
-        if assistant_blocks:
-            api_messages.append({"role": "assistant", "content": assistant_blocks})
-            assistant_blocks = []
-
-    def flush_tool_results():
-        nonlocal tool_result_blocks
-        if tool_result_blocks:
-            api_messages.append({"role": "user", "content": tool_result_blocks})
-            tool_result_blocks = []
-
-    for msg in session["messages"]:
-        role = msg.get("role")
-        msg_type = msg.get("type")
-        if role == "system":
-            system_prompt = msg["content"]
-        elif role == "user":
-            flush_assistant()
-            flush_tool_results()
-            api_messages.append({"role": "user", "content": msg["content"]})
-        elif role == "assistant":
-            flush_tool_results()
-            assistant_blocks.append({"type": "text", "text": msg["content"]})
-        elif msg_type == "thinking":
-            flush_tool_results()
-            block = {"type": "thinking", "thinking": msg["content"]}
-            if "signature" in msg:
-                block["signature"] = msg["signature"]
-            assistant_blocks.append(block)
-        elif msg_type == "tool_call":
-            flush_tool_results()
-            assistant_blocks.append({
-                "type": "tool_use", "id": msg["id"],
-                "name": msg["name"], "input": msg["input"],
-            })
-        elif msg_type == "tool_result":
-            flush_assistant()
-            output = msg["output"]
-            tool_result_blocks.append({
-                "type": "tool_result", "tool_use_id": msg["id"],
-                "content": output if isinstance(output, str) else json.dumps(output),
-            })
-    flush_assistant()
-    flush_tool_results()
-
-    # Call the model
-    kwargs = dict(
-        model="claude-sonnet-4-5",
-        max_tokens=16000,
-        messages=api_messages,
-        thinking={"type": "enabled", "budget_tokens": 10000},
-        tools=tools,
-    )
-    if system_prompt:
-        kwargs["system"] = system_prompt
-    api_response = client.messages.create(**kwargs).to_dict()
-
-    # Parse response back to generic messages
-    messages = []
-    for block in api_response.get("content", []):
-        if block["type"] == "thinking":
-            msg = {"type": "thinking", "content": block["thinking"], "ts": now()}
-            if "signature" in block:
-                msg["signature"] = block["signature"]
-            messages.append(msg)
-        elif block["type"] == "text" and block["text"]:
-            messages.append({"role": "assistant", "content": block["text"], "ts": now()})
-        elif block["type"] == "tool_use":
-            messages.append({
-                "type": "tool_call", "name": block["name"],
-                "id": block["id"], "input": block["input"],
-            })
-    return messages
+import pytest
 
 
-tools = [
+TOOLS = [
     {
         "name": "add",
         "description": "Add two numbers together. Use this for any addition.",
@@ -105,16 +18,118 @@ tools = [
     }
 ]
 
+
+def make_invoke_model():
+    """Create a mock invoke_model that expects: user msg -> thinking + tool_call -> tool_result -> final answer."""
+    call_count = 0
+
+    def invoke_model(tools, session):
+        nonlocal call_count
+        call_count += 1
+        messages = session["messages"]
+
+        if call_count == 1:
+            if not any(m.get("role") == "user" for m in messages):
+                raise ValueError("Expected a user message on first call")
+            return [
+                {"type": "thinking", "content": "I need to add these two numbers.", "signature": "sig_abc123"},
+                {"type": "tool_call", "name": "add", "id": "call_001", "input": {"a": 98765432101234, "b": 12345678909876}},
+            ]
+        elif call_count == 2:
+            if not any(m.get("type") == "tool_result" for m in messages):
+                raise ValueError("Expected a tool_result on second call")
+            tool_result = next(m for m in messages if m.get("type") == "tool_result")
+            result_value = json.loads(tool_result["output"])["result"]
+            return [
+                {"role": "assistant", "content": f"The answer is {result_value}.", "ts": now()},
+            ]
+        else:
+            raise ValueError(f"Unexpected call #{call_count}")
+
+    return invoke_model
+
+
 def add(a, b):
     return json.dumps({"result": a + b})
 
-session = {
-    "messages": [
-        {"role": "user", "content": "What is 98765432101234 + 12345678909876?"}
-    ]
-}
 
-result = agent_loop(invoke_model, tools, session, tool_handlers={"add": add})
+class TestAgentLoop:
+    def test_tool_call_and_response(self):
+        """Full loop: user question -> thinking + tool call -> tool result -> final answer."""
+        session = {
+            "messages": [
+                {"role": "user", "content": "What is 98765432101234 + 12345678909876?"}
+            ]
+        }
+        result = agent_loop(make_invoke_model(), TOOLS, session, tool_handlers={"add": add})
+        final = response(result)
+        assert final is not None
+        assert "111111111011110" in final["content"]
 
-print("\n" + "-"*80)
-print(response(result)["content"])
+    def test_session_contains_all_message_types(self):
+        """Verify the session accumulates thinking, tool_call, tool_result, and assistant messages."""
+        session = {
+            "messages": [
+                {"role": "user", "content": "What is 98765432101234 + 12345678909876?"}
+            ]
+        }
+        result = agent_loop(make_invoke_model(), TOOLS, session, tool_handlers={"add": add})
+        msgs = result["messages"]
+        types = [(m.get("role"), m.get("type")) for m in msgs]
+        assert ("user", None) in types
+        assert (None, "thinking") in types
+        assert (None, "tool_call") in types
+        assert (None, "tool_result") in types
+        assert ("assistant", None) in types
+
+    def test_tool_result_is_correct(self):
+        """Verify the tool handler is called and produces the right output."""
+        session = {
+            "messages": [
+                {"role": "user", "content": "What is 98765432101234 + 12345678909876?"}
+            ]
+        }
+        result = agent_loop(make_invoke_model(), TOOLS, session, tool_handlers={"add": add})
+        tool_results = [m for m in result["messages"] if m.get("type") == "tool_result"]
+        assert len(tool_results) == 1
+        assert json.loads(tool_results[0]["output"])["result"] == 111111111011110
+
+    def test_no_user_message_errors(self):
+        """invoke_model should error if there's no user message."""
+        session = {"messages": []}
+        with pytest.raises(ValueError, match="Expected a user message"):
+            agent_loop(make_invoke_model(), TOOLS, session, tool_handlers={"add": add})
+
+    def test_stops_without_tool_calls(self):
+        """Loop should stop after a single call if the model returns no tool calls."""
+        def invoke_once(tools, session):
+            return [
+                {"role": "assistant", "content": "No tools needed.", "ts": now()},
+            ]
+
+        session = {
+            "messages": [
+                {"role": "user", "content": "Hello"}
+            ]
+        }
+        result = agent_loop(invoke_once, TOOLS, session, tool_handlers={"add": add})
+        final = response(result)
+        assert final["content"] == "No tools needed."
+        # Should only have user + assistant (no tool calls/results)
+        assert not any(m.get("type") == "tool_call" for m in result["messages"])
+
+    def test_max_iterations(self):
+        """Loop should respect max_iterations even if model keeps returning tool calls."""
+        def invoke_always_tool(tools, session):
+            return [
+                {"type": "tool_call", "name": "add", "id": "call_loop", "input": {"a": 1, "b": 2}},
+            ]
+
+        session = {
+            "messages": [
+                {"role": "user", "content": "Keep adding"}
+            ]
+        }
+        result = agent_loop(invoke_always_tool, TOOLS, session, tool_handlers={"add": add}, max_iterations=3)
+        tool_calls = [m for m in result["messages"] if m.get("type") == "tool_call"]
+        assert len(tool_calls) == 3
