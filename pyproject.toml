@@ -1,6 +1,6 @@
 [project]
 name = "simple-agent-loop"
-version = "0.1.1"
+version = "0.1.2"
 description = "A minimal agent loop for tool-using language models"
 readme = "README.md"
 license = "MIT"
