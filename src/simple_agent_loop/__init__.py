@@ -36,103 +36,6 @@ def response(session):
     return None
 
 
-def to_api_messages(messages):
-    """Convert generic messages to Anthropic API format.
-
-    Groups consecutive thinking/assistant/tool_call into a single assistant message,
-    and consecutive tool_results into a single user message.
-    """
-    api_messages = []
-    assistant_blocks = []
-    tool_result_blocks = []
-
-    def flush_assistant():
-        nonlocal assistant_blocks
-        if assistant_blocks:
-            api_messages.append({"role": "assistant", "content": assistant_blocks})
-            assistant_blocks = []
-
-    def flush_tool_results():
-        nonlocal tool_result_blocks
-        if tool_result_blocks:
-            api_messages.append({"role": "user", "content": tool_result_blocks})
-            tool_result_blocks = []
-
-    for msg in messages:
-        role = msg.get("role")
-        msg_type = msg.get("type")
-
-        if role == "system":
-            continue
-
-        elif role == "user":
-            flush_assistant()
-            flush_tool_results()
-            api_messages.append({"role": "user", "content": msg["content"]})
-
-        elif role == "assistant":
-            flush_tool_results()
-            assistant_blocks.append({"type": "text", "text": msg["content"]})
-
-        elif msg_type == "thinking":
-            flush_tool_results()
-            block = {"type": "thinking", "thinking": msg["content"]}
-            if "signature" in msg:
-                block["signature"] = msg["signature"]
-            assistant_blocks.append(block)
-
-        elif msg_type == "tool_call":
-            flush_tool_results()
-            assistant_blocks.append({
-                "type": "tool_use",
-                "id": msg["id"],
-                "name": msg["name"],
-                "input": msg["input"],
-            })
-
-        elif msg_type == "tool_result":
-            flush_assistant()
-            output = msg["output"]
-            tool_result_blocks.append({
-                "type": "tool_result",
-                "tool_use_id": msg["id"],
-                "content": output if isinstance(output, str) else json.dumps(output),
-            })
-
-    flush_assistant()
-    flush_tool_results()
-    return api_messages
-
-
-def parse_response(api_response):
-    """Parse Anthropic API response dict into generic messages."""
-    messages = []
-    ts = now()
-
-    for block in api_response.get("content", []):
-        block_type = block["type"]
-
-        if block_type == "thinking":
-            msg = {"type": "thinking", "content": block["thinking"], "ts": ts}
-            if "signature" in block:
-                msg["signature"] = block["signature"]
-            messages.append(msg)
-
-        elif block_type == "text":
-            if block["text"]:
-                messages.append({"role": "assistant", "content": block["text"], "ts": ts})
-
-        elif block_type == "tool_use":
-            messages.append({
-                "type": "tool_call",
-                "name": block["name"],
-                "id": block["id"],
-                "input": block["input"],
-            })
-
-    return messages
-
-
 def execute_tool_calls(tool_calls, tool_handlers):
     """Execute tool calls in parallel via ThreadPoolExecutor. Errors are caught and returned as results."""
     results = []
@@ -225,9 +128,8 @@ def readme():
     return r"""
 # simple_agent_loop
 
-A minimal agent loop for tool-using language models. ~250 lines. Handles
-message format conversion, parallel tool execution, session compaction,
-and subagent composition.
+A minimal agent loop for tool-using language models. ~200 lines. Handles
+parallel tool execution, session compaction, and subagent composition.
 
 ## Setup
 
@@ -239,16 +141,91 @@ import simple_agent_loop as sal
 client = anthropic.Anthropic()  # uses ANTHROPIC_API_KEY env var
 
 def invoke_model(tools, session):
-    kwargs = dict(
-        model="claude-sonnet-4-5",
-        max_tokens=16000,
-        messages=session["messages"],
-    )
-    if "system" in session:
-        kwargs["system"] = session["system"]
+    # session["messages"] contains generic messages:
+    #   {"role": "system", "content": "..."}
+    #   {"role": "user", "content": "..."}
+    #   {"role": "assistant", "content": "..."}
+    #   {"type": "thinking", "content": "...", "signature": "..."}
+    #   {"type": "tool_call", "name": "...", "id": "...", "input": {...}}
+    #   {"type": "tool_result", "id": "...", "output": "..."}
+
+    # --- Convert generic messages to Anthropic API format ---
+    system_prompt = None
+    api_messages = []
+    assistant_blocks = []
+    tool_result_blocks = []
+
+    def flush_assistant():
+        nonlocal assistant_blocks
+        if assistant_blocks:
+            api_messages.append({"role": "assistant", "content": assistant_blocks})
+            assistant_blocks = []
+
+    def flush_tool_results():
+        nonlocal tool_result_blocks
+        if tool_result_blocks:
+            api_messages.append({"role": "user", "content": tool_result_blocks})
+            tool_result_blocks = []
+
+    for msg in session["messages"]:
+        role = msg.get("role")
+        msg_type = msg.get("type")
+        if role == "system":
+            system_prompt = msg["content"]
+        elif role == "user":
+            flush_assistant()
+            flush_tool_results()
+            api_messages.append({"role": "user", "content": msg["content"]})
+        elif role == "assistant":
+            flush_tool_results()
+            assistant_blocks.append({"type": "text", "text": msg["content"]})
+        elif msg_type == "thinking":
+            flush_tool_results()
+            block = {"type": "thinking", "thinking": msg["content"]}
+            if "signature" in msg:
+                block["signature"] = msg["signature"]
+            assistant_blocks.append(block)
+        elif msg_type == "tool_call":
+            flush_tool_results()
+            assistant_blocks.append({
+                "type": "tool_use", "id": msg["id"],
+                "name": msg["name"], "input": msg["input"],
+            })
+        elif msg_type == "tool_result":
+            flush_assistant()
+            output = msg["output"]
+            tool_result_blocks.append({
+                "type": "tool_result", "tool_use_id": msg["id"],
+                "content": output if isinstance(output, str) else json.dumps(output),
+            })
+    flush_assistant()
+    flush_tool_results()
+
+    # --- Call the model ---
+    kwargs = dict(model="claude-sonnet-4-5", max_tokens=16000, messages=api_messages)
+    if system_prompt:
+        kwargs["system"] = system_prompt
     if tools:
         kwargs["tools"] = tools
-    return sal.parse_response(client.messages.create(**kwargs).to_dict())
+    api_response = client.messages.create(**kwargs).to_dict()
+
+    # --- Parse response back to generic messages ---
+    # Return: [{"role": "assistant", "content": "..."}, {"type": "tool_call", ...}, ...]
+    messages = []
+    for block in api_response.get("content", []):
+        if block["type"] == "thinking":
+            msg = {"type": "thinking", "content": block["thinking"], "ts": sal.now()}
+            if "signature" in block:
+                msg["signature"] = block["signature"]
+            messages.append(msg)
+        elif block["type"] == "text" and block["text"]:
+            messages.append({"role": "assistant", "content": block["text"], "ts": sal.now()})
+        elif block["type"] == "tool_use":
+            messages.append({
+                "type": "tool_call", "name": block["name"],
+                "id": block["id"], "input": block["input"],
+            })
+    return messages
 ```
 
 ## Hello World
@@ -402,7 +379,7 @@ Tool calls within a single model response execute in parallel automatically.
 ### Agent Loop
 
 - `agent_loop(invoke_model, tools, session, tool_handlers=None, name=None, max_iterations=None)`
-  - `invoke_model(tools, session)` - Function that calls the model API and returns a list of generic messages
+  - `invoke_model(tools, session)` - Function that receives the session with generic messages, calls the model API, and returns a list of generic messages
   - `tools` - List of Anthropic tool schemas ([] for no tools)
   - `session` - Session dict from init_session
   - `tool_handlers` - Dict mapping tool names to handler functions
@@ -421,9 +398,9 @@ Messages use a generic format independent of any API:
     {"type": "tool_call", "name": "...", "id": "...", "input": {...}}
     {"type": "tool_result", "id": "...", "output": "..."}
 
-`to_api_messages()` converts generic messages to Anthropic API format.
-`parse_response()` converts an Anthropic API response dict back to generic
-messages -- call it inside your `invoke_model` before returning.
+Your `invoke_model` receives the raw session with these generic messages
+and must return a list of generic messages. All API-specific conversion
+happens inside `invoke_model`.
 """
 
 
@@ -435,11 +412,7 @@ def agent_loop(invoke_model, tools, session, tool_handlers=None, name=None, max_
     while max_iterations is None or iteration < max_iterations:
         iteration += 1
 
-        system_prompts = [m["content"] for m in session["messages"] if m.get("role") == "system"]
-        api_session = {"messages": to_api_messages(session["messages"])}
-        if system_prompts:
-            api_session["system"] = system_prompts[0]
-        messages = invoke_model(tools, api_session)
+        messages = invoke_model(tools, session)
         for msg in messages:
             extend_session(session, msg)
             log(msg, name)
