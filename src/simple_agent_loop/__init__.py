@@ -1,8 +1,6 @@
 from datetime import datetime, timezone
 import copy
 import json
-import concurrent.futures
-
 
 def now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -36,12 +34,42 @@ def response(session):
     return None
 
 
-def execute_tool_calls(tool_calls, tool_handlers):
-    """Execute tool calls in parallel via ThreadPoolExecutor. Errors are caught and returned as results."""
+def execute_tool_calls(tool_calls, tool_handlers, parallel=True):
+    """Execute tool calls. When parallel=True (default), uses ThreadPoolExecutor. When False, executes sequentially."""
     results = []
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future_to_tc = {}
+    if parallel:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_to_tc = {}
+            for tc in tool_calls:
+                handler = tool_handlers.get(tc["name"])
+                if handler is None:
+                    results.append({
+                        "type": "tool_result",
+                        "id": tc["id"],
+                        "output": f"Error: unknown tool '{tc['name']}'",
+                    })
+                    continue
+                future = executor.submit(handler, **tc["input"])
+                future_to_tc[future] = tc
+
+            for future in concurrent.futures.as_completed(future_to_tc):
+                tc = future_to_tc[future]
+                try:
+                    output = future.result()
+                    results.append({
+                        "type": "tool_result",
+                        "id": tc["id"],
+                        "output": output,
+                    })
+                except Exception as e:
+                    results.append({
+                        "type": "tool_result",
+                        "id": tc["id"],
+                        "output": f"Error: {e}",
+                    })
+    else:
         for tc in tool_calls:
             handler = tool_handlers.get(tc["name"])
             if handler is None:
@@ -51,13 +79,8 @@ def execute_tool_calls(tool_calls, tool_handlers):
                     "output": f"Error: unknown tool '{tc['name']}'",
                 })
                 continue
-            future = executor.submit(handler, **tc["input"])
-            future_to_tc[future] = tc
-
-        for future in concurrent.futures.as_completed(future_to_tc):
-            tc = future_to_tc[future]
             try:
-                output = future.result()
+                output = handler(**tc["input"])
                 results.append({
                     "type": "tool_result",
                     "id": tc["id"],
@@ -378,13 +401,14 @@ Tool calls within a single model response execute in parallel automatically.
 
 ### Agent Loop
 
-- `agent_loop(invoke_model, tools, session, tool_handlers=None, name=None, max_iterations=None)`
+- `agent_loop(invoke_model, tools, session, tool_handlers=None, name=None, max_iterations=None, parallel=True)`
   - `invoke_model(tools, session)` - Function that receives the session with generic messages, calls the model API, and returns a list of generic messages
   - `tools` - List of Anthropic tool schemas ([] for no tools)
   - `session` - Session dict from init_session
   - `tool_handlers` - Dict mapping tool names to handler functions
   - `name` - Agent name for log output
   - `max_iterations` - Max model calls before stopping (None = unlimited)
+  - `parallel` - Execute tool calls in parallel via threads (default True). Set to False for sequential execution (useful in environments without thread support).
   - Returns the session with all messages appended
 
 ### Message Format
@@ -404,7 +428,7 @@ happens inside `invoke_model`.
 """
 
 
-def agent_loop(invoke_model, tools, session, tool_handlers=None, name=None, max_iterations=None):
+def agent_loop(invoke_model, tools, session, tool_handlers=None, name=None, max_iterations=None, parallel=True):
     if tool_handlers is None:
         tool_handlers = {}
 
@@ -423,7 +447,7 @@ def agent_loop(invoke_model, tools, session, tool_handlers=None, name=None, max_
         if not tool_calls:
             break
 
-        results = execute_tool_calls(tool_calls, tool_handlers)
+        results = execute_tool_calls(tool_calls, tool_handlers, parallel=parallel)
         for result in results:
             extend_session(session, result)
             log(result, name)

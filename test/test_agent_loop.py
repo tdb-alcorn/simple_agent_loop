@@ -118,6 +118,21 @@ class TestAgentLoop:
         # Should only have user + assistant (no tool calls/results)
         assert not any(m.get("type") == "tool_call" for m in result["messages"])
 
+    def test_sequential_mode(self):
+        """parallel=False should produce the same results as parallel mode."""
+        session = {
+            "messages": [
+                {"role": "user", "content": "What is 98765432101234 + 12345678909876?"}
+            ]
+        }
+        result = agent_loop(make_invoke_model(), TOOLS, session, tool_handlers={"add": add}, parallel=False)
+        final = response(result)
+        assert final is not None
+        assert "111111111011110" in final["content"]
+        tool_results = [m for m in result["messages"] if m.get("type") == "tool_result"]
+        assert len(tool_results) == 1
+        assert json.loads(tool_results[0]["output"])["result"] == 111111111011110
+
     def test_max_iterations(self):
         """Loop should respect max_iterations even if model keeps returning tool calls."""
         def invoke_always_tool(tools, session):
